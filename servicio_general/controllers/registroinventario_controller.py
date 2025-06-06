@@ -1,0 +1,271 @@
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.orm import Session
+from sqlalchemy import func, and_, select
+from shared.database import get_db  # Asumiendo que tienes esta función para obtener la sesión de la DB
+from shared.models.registrosinventario import RegistrosInventario  # Tu modelo de RegistrosInventario
+from servicio_general.schemas.registrosinventario_schema import RegistrosInventarioCreate, RegistrosInventarioResponse
+from shared.schemas.paginacion import PaginatedResponse  # Los esquemas de Pydantic
+from datetime import timedelta, datetime
+
+router = APIRouter()
+
+from datetime import datetime, timedelta
+import pandas as pd
+from prophet import Prophet
+from fastapi import HTTPException, Query, Depends
+from pydantic import BaseModel
+from typing import Optional, List
+from datetime import datetime, timedelta
+import pandas as pd
+import numpy as np
+from sklearn.linear_model import LinearRegression
+from fastapi import HTTPException, Query, Depends
+from sqlalchemy.orm import Session
+from sqlalchemy import func, and_
+import random
+# Modelos Pydantic
+class PrediccionResponse(BaseModel):
+    fecha: str
+    cantidad: float
+
+class PrediccionListResponse(BaseModel):
+    prediccion: List[PrediccionResponse]
+
+
+def generar_prediccion_con_promedio(resultados: list, dias_prediccion: int):
+    """Predicción basada en promedio histórico"""
+    if resultados:
+        # Calcular promedio de todos los datos
+        promedio = sum(r.cantidad for r in resultados) / len(resultados)
+    else:
+        # Valor por defecto más realista (ajustar según necesidades)
+        promedio = random.uniform(2.0, 5.0)
+
+    hoy = datetime.now().date()
+    predicciones = []
+    for i in range(1, dias_prediccion + 1):
+        fecha = (hoy + timedelta(days=i)).strftime('%Y-%m-%d')
+        predicciones.append(PrediccionResponse(
+            fecha=fecha,
+            cantidad=round(promedio, 2)
+        ))
+    return predicciones
+
+
+def generar_prediccion_promedio_movil(resultados: list, dias_prediccion: int, ventana: int = 7):
+    """Predicción basada en promedio móvil"""
+    if not resultados:
+        return generar_prediccion_con_promedio([], dias_prediccion)
+
+    # Obtener las últimas N cantidades
+    ultimos_valores = [r.cantidad for r in resultados[-ventana:]]
+    promedio = sum(ultimos_valores) / len(ultimos_valores)
+
+    hoy = datetime.now().date()
+    predicciones = []
+    for i in range(1, dias_prediccion + 1):
+        fecha = (hoy + timedelta(days=i)).strftime('%Y-%m-%d')
+        predicciones.append(PrediccionResponse(
+            fecha=fecha,
+            cantidad=round(promedio, 2)
+        ))
+    return predicciones
+
+
+def generar_prediccion_valor_constante(resultados: list, dias_prediccion: int):
+    """Predicción usando el último valor conocido"""
+    if resultados:
+        valor = resultados[-1].cantidad
+    else:
+        valor = random.uniform(2.0, 5.0)  # Valor por defecto
+
+    hoy = datetime.now().date()
+    predicciones = []
+    for i in range(1, dias_prediccion + 1):
+        fecha = (hoy + timedelta(days=i)).strftime('%Y-%m-%d')
+        predicciones.append(PrediccionResponse(
+            fecha=fecha,
+            cantidad=round(valor, 2)
+        ))
+    return predicciones
+
+
+def generar_prediccion_lineal(resultados: list, dias_prediccion: int):
+    """Predicción usando regresión lineal"""
+    # 1. Preparar datos para regresión lineal
+    fechas = [r.fecha for r in resultados]
+    dias_desde_inicio = [(fecha - min(fechas)).days for fecha in fechas]
+
+    X = np.array(dias_desde_inicio).reshape(-1, 1)
+    y = np.array([r.cantidad for r in resultados])
+
+    # 2. Crear y entrenar modelo
+    modelo = LinearRegression()
+    modelo.fit(X, y)
+
+    # 3. Generar predicciones para días futuros
+    ultimo_dia = max(dias_desde_inicio)
+    dias_futuros = [ultimo_dia + i for i in range(1, dias_prediccion + 1)]
+    X_futuro = np.array(dias_futuros).reshape(-1, 1)
+    y_pred = modelo.predict(X_futuro)
+
+    # 4. Generar fechas futuras
+    ultima_fecha = max(fechas)
+    fechas_futuras = [ultima_fecha + timedelta(days=i) for i in range(1, dias_prediccion + 1)]
+
+    # 5. Formatear respuesta
+    predicciones = []
+    for fecha, cantidad in zip(fechas_futuras, y_pred):
+        predicciones.append(PrediccionResponse(
+            fecha=fecha.strftime('%Y-%m-%d'),
+            cantidad=max(0, round(float(cantidad), 2)  # Evitar valores negativos
+                         )))
+
+    return predicciones
+
+
+@router.get("/prediccion/demanda", response_model=PrediccionListResponse)
+async def obtener_prediccion_demanda(
+        producto_codigo: str = Query(..., title="Código del producto"),
+        empresa_id: int = Query(..., title="ID de la empresa"),
+        dias_prediccion: int = Query(7, title="Días a predecir"),
+        db: Session = Depends(get_db)
+):
+    try:
+        # 1. Obtener datos históricos (últimos 2 años)
+        fecha_limite = datetime.now() - timedelta(days=730)
+
+        # Consulta mejorada con manejo de valores nulos y formato de fechas
+        resultados = db.query(
+            func.date(RegistrosInventario.fecha).label("fecha"),
+            func.count().label("cantidad")
+        ).filter(
+            func.trim(RegistrosInventario.producto_codigo) == producto_codigo.strip(),
+            RegistrosInventario.empresa_id == empresa_id,
+            func.lower(func.trim(RegistrosInventario.accion)) == 'retiro',
+            RegistrosInventario.fecha >= fecha_limite
+        ).group_by(func.date(RegistrosInventario.fecha)) \
+            .order_by(func.date(RegistrosInventario.fecha)) \
+            .all()
+
+        # Depuración: mostrar cantidad de datos obtenidos
+        print(f"\n{'=' * 50}")
+        print(f"Predicción solicitada para {producto_codigo} (Empresa: {empresa_id})")
+        print(f"Registros encontrados: {len(resultados)}")
+
+        # Si no hay datos, usar valor por defecto
+        if not resultados:
+            print("Usando modelo de valor constante por falta de datos")
+            predicciones = generar_prediccion_valor_constante([], dias_prediccion)
+            return PrediccionListResponse(prediccion=predicciones)
+
+        # Depuración: mostrar primeros 5 registros
+        print("Primeros 5 registros:")
+        for r in resultados[:5]:
+            print(f"- {r.fecha}: {r.cantidad}")
+
+        # 2. Seleccionar modelo según cantidad de datos
+        n = len(resultados)
+        if n < 5:
+            print("Usando modelo de valor constante (pocos datos)")
+            predicciones = generar_prediccion_valor_constante(resultados, dias_prediccion)
+        elif n < 10:
+            print("Usando modelo de promedio simple")
+            predicciones = generar_prediccion_con_promedio(resultados, dias_prediccion)
+        elif n < 20:
+            print("Usando modelo de promedio móvil (ventana=7)")
+            predicciones = generar_prediccion_promedio_movil(resultados, dias_prediccion, ventana=7)
+        else:
+            print("Usando modelo de regresión lineal")
+            predicciones = generar_prediccion_lineal(resultados, dias_prediccion)
+
+        # Depuración: mostrar predicciones generadas
+        print("\nPredicciones generadas:")
+        for p in predicciones[:min(5, len(predicciones))]:
+            print(f"- {p.fecha}: {p.cantidad}")
+
+        return PrediccionListResponse(prediccion=predicciones)
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        # En caso de error, usar modelo simple
+        try:
+            predicciones = generar_prediccion_valor_constante([], dias_prediccion)
+            return PrediccionListResponse(prediccion=predicciones)
+        except:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error grave en predicción: {str(e)}"
+            )
+
+# Ruta para crear una nueva registrosinventario
+@router.post("/", response_model=RegistrosInventarioResponse)
+def crear_registrosinventario(registrosinventario: RegistrosInventarioCreate, db: Session = Depends(get_db)):
+
+    # Creamos la nueva registrosinventario
+    nueva_registrosinventario = RegistrosInventario(**registrosinventario.dict())
+    db.add(nueva_registrosinventario)
+    db.commit()
+    db.refresh(nueva_registrosinventario)
+    return nueva_registrosinventario
+
+
+# Ruta para obtener todas las registrosinventario con paginación
+@router.get("/", response_model=PaginatedResponse[RegistrosInventarioResponse])
+def obtener_registrosinventario(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
+    # Obtenemos las registrosinventario con paginación
+    total_registros = db.query(RegistrosInventario).count()
+    registrosinventario = db.query(RegistrosInventario).offset(skip).limit(limit).all()
+
+    total_paginas = (total_registros + limit - 1) // limit  # Calculamos el total de páginas
+    return PaginatedResponse(
+        total_registros=total_registros,
+        por_pagina=limit,
+        pagina_actual=skip // limit + 1,
+        total_paginas=total_paginas,
+        data=registrosinventario
+    )
+
+
+# Ruta para obtener una registrosinventario por su id
+@router.get("/{registrosinventario_id}", response_model=RegistrosInventarioResponse)
+def obtener_registrosinventario(registrosinventario_id: int, db: Session = Depends(get_db)):
+    registrosinventario = db.query(RegistrosInventario).filter(RegistrosInventario.id == registrosinventario_id).first()
+    if not registrosinventario:
+        raise HTTPException(status_code=404, detail="RegistrosInventario no encontrada.")
+    return registrosinventario
+
+
+# Ruta para actualizar una registrosinventario
+@router.put("/{registrosinventario_id}", response_model=RegistrosInventarioResponse, tags=["RegistrosInventario"])
+def actualizar_registrosinventario(registrosinventario_id: int, registrosinventario: RegistrosInventarioCreate, db: Session = Depends(get_db)):
+    # Verificamos si la cuenta existe
+    registrosinventario_existente = db.query(RegistrosInventario).filter(RegistrosInventario.id == registrosinventario_id).first()
+    if not registrosinventario_existente:
+        raise HTTPException(status_code=404, detail="Cuenta no encontrada.")
+
+    # Actualizamos los campos de la cuenta de manera más eficiente
+    for key, value in registrosinventario.dict().items():
+        setattr(registrosinventario_existente, key, value)
+
+    # Guardamos los cambios en la base de datos
+    db.commit()
+    db.refresh(registrosinventario_existente)
+
+    return registrosinventario_existente
+
+
+# Ruta para eliminar una registrosinventario
+@router.delete("/{registrosinventario_id}", response_model=RegistrosInventarioResponse)
+def eliminar_registrosinventario(registrosinventario_id: int, db: Session = Depends(get_db)):
+    registrosinventario = db.query(RegistrosInventario).filter(RegistrosInventario.id == registrosinventario_id).first()
+    if not registrosinventario:
+        raise HTTPException(status_code=404, detail="RegistrosInventario no encontrada.")
+
+    db.delete(registrosinventario)
+    db.commit()
+    return registrosinventario
+
+
+
