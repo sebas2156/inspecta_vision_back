@@ -22,6 +22,7 @@ class ProductoSector(Base):
     permitido: Mapped[int] = mapped_column(TINYINT(4), server_default=text('1'))
     stock_minimo: Mapped[Optional[int]] = mapped_column(INTEGER(11), server_default=text('0'))
     stock_maximo: Mapped[Optional[int]] = mapped_column(INTEGER(11), server_default=text('9999'))
+    stock: Mapped[Optional[int]] = mapped_column(INTEGER(11), server_default=text('0'))
 
     empresa: Mapped['Productos'] = relationship('Productos', foreign_keys=[empresa_id], back_populates='producto_sector')
     productos: Mapped['Productos'] = relationship('Productos', foreign_keys=[producto_codigo], back_populates='producto_sector_')

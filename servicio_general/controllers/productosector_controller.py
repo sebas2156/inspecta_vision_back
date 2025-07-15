@@ -1,37 +1,93 @@
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
-from shared.database import get_db  # Asumiendo que tienes esta función para obtener la sesión de la DB
-from shared.models.productosector import ProductoSector  # Tu modelo de ProductoSector
+from shared.database import get_db
+from shared.models.productosector import ProductoSector
 from servicio_general.schemas.productosector_schema import ProductoSectorCreate, ProductoSectorResponse
-from shared.schemas.paginacion import PaginatedResponse  # Los esquemas de Pydantic
+from shared.schemas.paginacion import PaginatedResponse
+from confluent_kafka import Producer
+import json
+import threading
+from sqlalchemy import and_
+
+# Configuración de Kafka
+KAFKA_CONFIG = {
+    'bootstrap.servers': 'localhost:9092',
+    'client.id': 'servicio-productosector'
+}
+
+# Crear productor Kafka
+kafka_producer = Producer(KAFKA_CONFIG)
+
+
+# Función para emitir eventos en segundo plano
+def emitir_evento_kafka_async(evento):
+    def delivery_report(err, msg):
+        if err is not None:
+            print(f'Error al entregar mensaje: {err}')
+        else:
+            print(f'Mensaje entregado a {msg.topic()} [{msg.partition()}]')
+
+    try:
+        evento_str = json.dumps(evento)
+        kafka_producer.produce(
+            topic='notificaciones',
+            value=evento_str,
+            callback=delivery_report
+        )
+        kafka_producer.flush()
+    except Exception as e:
+        print(f"Error al emitir evento Kafka: {e}")
+
 
 router = APIRouter()
 
 
-# Ruta para crear una nueva productosector
+# Ruta para crear una nueva relación producto-sector
 @router.post("/", response_model=ProductoSectorResponse)
 def crear_productosector(productosector: ProductoSectorCreate, db: Session = Depends(get_db)):
-    # Verificamos si la productosector con el mismo correo ya existe
-    existing_productosector = db.query(ProductoSector).filter(ProductoSector.correo == productosector.correo).first()
-    if existing_productosector:
-        raise HTTPException(status_code=400, detail="La productosector ya existe.")
+    # Verificamos si ya existe usando la clave compuesta
+    existing = db.query(ProductoSector).filter(
+        and_(
+            ProductoSector.producto_codigo == productosector.producto_codigo,
+            ProductoSector.sector_id == productosector.sector_id,
+            ProductoSector.empresa_id == productosector.empresa_id
+        )
+    ).first()
 
-    # Creamos la nueva productosector
+    if existing:
+        raise HTTPException(
+            status_code=400,
+            detail="La relación producto-sector ya existe para esta combinación de producto, sector y empresa."
+        )
+
+    # Creamos la nueva relación
     nueva_productosector = ProductoSector(**productosector.dict())
     db.add(nueva_productosector)
     db.commit()
     db.refresh(nueva_productosector)
+
+    # Emitir evento de creación (solo datos relevantes para detección)
+    evento = {
+        "tipo": "producto_sector",
+        "accion": "creado",
+        "sector_id": nueva_productosector.sector_id,
+        "producto_codigo": nueva_productosector.producto_codigo,
+        "permitido": nueva_productosector.permitido
+    }
+
+    # Emitir en segundo plano
+    threading.Thread(target=emitir_evento_kafka_async, args=(evento,)).start()
+
     return nueva_productosector
 
 
-# Ruta para obtener todas las productosector con paginación
+# Ruta para obtener todas las relaciones producto-sector con paginación
 @router.get("/", response_model=PaginatedResponse[ProductoSectorResponse])
 def obtener_productosector(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
-    # Obtenemos las productosector con paginación
     total_registros = db.query(ProductoSector).count()
     productosector = db.query(ProductoSector).offset(skip).limit(limit).all()
 
-    total_paginas = (total_registros + limit - 1) // limit  # Calculamos el total de páginas
+    total_paginas = (total_registros + limit - 1) // limit
     return PaginatedResponse(
         total_registros=total_registros,
         por_pagina=limit,
@@ -41,41 +97,112 @@ def obtener_productosector(skip: int = 0, limit: int = 10, db: Session = Depends
     )
 
 
-# Ruta para obtener una productosector por su id
-@router.get("/{productosector_id}", response_model=ProductoSectorResponse)
-def obtener_productosector(productosector_id: int, db: Session = Depends(get_db)):
-    productosector = db.query(ProductoSector).filter(ProductoSector.id == productosector_id).first()
+# Ruta para obtener una relación producto-sector por su clave compuesta
+@router.get("/buscar", response_model=ProductoSectorResponse)
+def obtener_productosector(
+        producto_codigo: str,
+        sector_id: int,
+        empresa_id: int,
+        db: Session = Depends(get_db)
+):
+    productosector = db.query(ProductoSector).filter(
+        and_(
+            ProductoSector.producto_codigo == producto_codigo,
+            ProductoSector.sector_id == sector_id,
+            ProductoSector.empresa_id == empresa_id
+        )
+    ).first()
+
     if not productosector:
-        raise HTTPException(status_code=404, detail="ProductoSector no encontrada.")
+        raise HTTPException(
+            status_code=404,
+            detail="Relación producto-sector no encontrada."
+        )
     return productosector
 
 
-# Ruta para actualizar una productosector
-@router.put("/{productosector_id}", response_model=ProductoSectorResponse, tags=["ProductoSector"])
-def actualizar_productosector(productosector_id: int, productosector: ProductoSectorCreate, db: Session = Depends(get_db)):
-    # Verificamos si la cuenta existe
-    productosector_existente = db.query(ProductoSector).filter(ProductoSector.id == productosector_id).first()
+# Ruta para actualizar una relación producto-sector
+@router.put("/", response_model=ProductoSectorResponse)
+def actualizar_productosector(
+        producto_codigo: str,
+        sector_id: int,
+        empresa_id: int,
+        productosector: ProductoSectorCreate,
+        db: Session = Depends(get_db)
+):
+    # Buscar por clave compuesta
+    productosector_existente = db.query(ProductoSector).filter(
+        and_(
+            ProductoSector.producto_codigo == producto_codigo,
+            ProductoSector.sector_id == sector_id,
+            ProductoSector.empresa_id == empresa_id
+        )
+    ).first()
+
     if not productosector_existente:
-        raise HTTPException(status_code=404, detail="Cuenta no encontrada.")
+        raise HTTPException(
+            status_code=404,
+            detail="Relación producto-sector no encontrada."
+        )
 
-    # Actualizamos los campos de la cuenta de manera más eficiente
+    # Guardamos el estado anterior de "permitido" para posible uso
+    permitido_anterior = productosector_existente.permitido
+
+    # Actualizamos los campos (excepto la clave compuesta)
     for key, value in productosector.dict().items():
-        setattr(productosector_existente, key, value)
+        if key not in ['producto_codigo', 'sector_id', 'empresa_id']:
+            setattr(productosector_existente, key, value)
 
-    # Guardamos los cambios en la base de datos
     db.commit()
     db.refresh(productosector_existente)
+
+    # Solo emitir evento si cambió el estado de "permitido"
+    if permitido_anterior != productosector_existente.permitido:
+        evento = {
+            "tipo": "producto_sector",
+            "accion": "actualizado",
+            "sector_id": productosector_existente.sector_id,
+            "producto_codigo": productosector_existente.producto_codigo,
+            "permitido": productosector_existente.permitido
+        }
+        threading.Thread(target=emitir_evento_kafka_async, args=(evento,)).start()
 
     return productosector_existente
 
 
-# Ruta para eliminar una productosector
-@router.delete("/{productosector_id}", response_model=ProductoSectorResponse)
-def eliminar_productosector(productosector_id: int, db: Session = Depends(get_db)):
-    productosector = db.query(ProductoSector).filter(ProductoSector.id == productosector_id).first()
+# Ruta para eliminar una relación producto-sector
+@router.delete("/")
+def eliminar_productosector(
+        producto_codigo: str,
+        sector_id: int,
+        empresa_id: int,
+        db: Session = Depends(get_db)
+):
+    productosector = db.query(ProductoSector).filter(
+        and_(
+            ProductoSector.producto_codigo == producto_codigo,
+            ProductoSector.sector_id == sector_id,
+            ProductoSector.empresa_id == empresa_id
+        )
+    ).first()
+
     if not productosector:
-        raise HTTPException(status_code=404, detail="ProductoSector no encontrada.")
+        raise HTTPException(
+            status_code=404,
+            detail="Relación producto-sector no encontrada."
+        )
 
     db.delete(productosector)
     db.commit()
-    return productosector
+
+    # Emitir evento de eliminación
+    evento = {
+        "tipo": "producto_sector",
+        "accion": "eliminado",
+        "sector_id": sector_id,
+        "producto_codigo": producto_codigo
+    }
+
+    threading.Thread(target=emitir_evento_kafka_async, args=(evento,)).start()
+
+    return {"mensaje": "Relación producto-sector eliminada exitosamente"}

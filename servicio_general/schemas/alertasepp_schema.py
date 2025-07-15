@@ -1,14 +1,25 @@
 from pydantic import BaseModel
-from typing import Optional, List
-import datetime
+from datetime import datetime
+from typing import Optional
 
 
-class AlertasEppCreate(BaseModel):
+class AlertasEppBase(BaseModel):
     regla_id: int
-    fecha: datetime.datetime
     sector_id: int
     tipo_incumplimiento: str
-    imagen: str
+    imagen: Optional[str] = None  # Ruta del archivo
+    imagen_url: Optional[str] = None  # URL completa para acceso
+    fecha: Optional[datetime] = None
 
-class AlertasEppResponse(AlertasEppCreate):
+
+class AlertasEppCreate(AlertasEppBase):
+    # Para creación, la imagen debe venir en base64
+    # pero no incluimos imagen_url en la creación
+    pass
+
+
+class AlertasEppResponse(AlertasEppBase):
     id: int
+
+    class Config:
+        orm_mode = True

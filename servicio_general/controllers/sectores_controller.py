@@ -1,7 +1,10 @@
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
+from sqlalchemy import exists, select
 from shared.database import get_db
 from shared.models.sectores import Sectores
+from shared.models.productosector import ProductoSector
+from shared.models.reglasepp import ReglasEpp
 from servicio_general.schemas.sectores_schema import SectoresCreate, SectoresResponse
 from shared.schemas.paginacion import PaginatedResponse
 
@@ -64,3 +67,53 @@ def eliminar_relacion(sectores_id: int, db: Session = Depends(get_db)):
     db.delete(rel)
     db.commit()
     return rel
+
+
+# Versión corregida usando join explícito
+@router.get("/con-productos/", response_model=PaginatedResponse[SectoresResponse])
+def obtener_sectores_con_productos(
+        skip: int = 0,
+        limit: int = 10,
+        db: Session = Depends(get_db)
+):
+    # Consulta con JOIN explícito para asegurar relación
+    query = db.query(Sectores).join(
+        ProductoSector,
+        ProductoSector.sector_id == Sectores.id
+    ).distinct(Sectores.id)
+
+    total = query.count()
+    sectores = query.offset(skip).limit(limit).all()
+    total_paginas = (total + limit - 1) // limit
+
+    return PaginatedResponse(
+        total_registros=total,
+        por_pagina=limit,
+        pagina_actual=skip // limit + 1,
+        total_paginas=total_paginas,
+        data=sectores
+    )
+
+
+# Versión alternativa usando subquery EXISTS (más eficiente)
+@router.get("/con-reglas-epp/", response_model=PaginatedResponse[SectoresResponse])
+def obtener_sectores_con_reglas_epp(
+        skip: int = 0,
+        limit: int = 10,
+        db: Session = Depends(get_db)
+):
+    # Subquery para verificar existencia en reglas_epp
+    has_rule = select(1).where(ReglasEpp.sector_id == Sectores.id).exists()
+    query = db.query(Sectores).filter(has_rule)
+
+    total = query.count()
+    sectores = query.offset(skip).limit(limit).all()
+    total_paginas = (total + limit - 1) // limit
+
+    return PaginatedResponse(
+        total_registros=total,
+        por_pagina=limit,
+        pagina_actual=skip // limit + 1,
+        total_paginas=total_paginas,
+        data=sectores
+    )

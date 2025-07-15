@@ -3,9 +3,11 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, select
 from shared.database import get_db  # Asumiendo que tienes esta función para obtener la sesión de la DB
 from shared.models.registrosinventario import RegistrosInventario  # Tu modelo de RegistrosInventario
+from shared.models.productosector import ProductoSector
 from servicio_general.schemas.registrosinventario_schema import RegistrosInventarioCreate, RegistrosInventarioResponse
 from shared.schemas.paginacion import PaginatedResponse  # Los esquemas de Pydantic
 from datetime import timedelta, datetime
+from sqlalchemy.exc import IntegrityError
 
 router = APIRouter()
 
@@ -142,7 +144,7 @@ async def obtener_prediccion_demanda(
         ).filter(
             func.trim(RegistrosInventario.producto_codigo) == producto_codigo.strip(),
             RegistrosInventario.empresa_id == empresa_id,
-            func.lower(func.trim(RegistrosInventario.accion)) == 'retiro',
+            func.lower(func.trim(RegistrosInventario.accion)) == 'salio',
             RegistrosInventario.fecha >= fecha_limite
         ).group_by(func.date(RegistrosInventario.fecha)) \
             .order_by(func.date(RegistrosInventario.fecha)) \
@@ -201,14 +203,55 @@ async def obtener_prediccion_demanda(
 
 # Ruta para crear una nueva registrosinventario
 @router.post("/", response_model=RegistrosInventarioResponse)
-def crear_registrosinventario(registrosinventario: RegistrosInventarioCreate, db: Session = Depends(get_db)):
+def crear_registrosinventario(
+    registrosinventario: RegistrosInventarioCreate,
+    db: Session = Depends(get_db)
+):
+    try:
+        # Crear el nuevo registro
+        nueva_registrosinventario = RegistrosInventario(**registrosinventario.dict())
+        db.add(nueva_registrosinventario)
 
-    # Creamos la nueva registrosinventario
-    nueva_registrosinventario = RegistrosInventario(**registrosinventario.dict())
-    db.add(nueva_registrosinventario)
-    db.commit()
-    db.refresh(nueva_registrosinventario)
-    return nueva_registrosinventario
+        # Intentar actualizar el stock del producto en el sector
+        producto_sector = db.query(ProductoSector).filter(
+            ProductoSector.producto_codigo == registrosinventario.producto_codigo,
+            ProductoSector.sector_id == registrosinventario.sector_id,
+            ProductoSector.empresa_id == registrosinventario.empresa_id
+        ).first()
+
+        if producto_sector:
+            if registrosinventario.accion == "salio":
+                producto_sector.stock = max(0, producto_sector.stock - 1)
+            elif registrosinventario.accion == "entro":
+                producto_sector.stock += 1
+        else:
+            # Crear nuevo registro en producto_sector
+            stock_inicial = 1 if registrosinventario.accion == "entro" else 0
+            producto_sector = ProductoSector(
+                producto_codigo=registrosinventario.producto_codigo,
+                sector_id=registrosinventario.sector_id,
+                empresa_id=registrosinventario.empresa_id,
+                stock=stock_inicial,
+                permitido=True
+            )
+            db.add(producto_sector)
+
+        db.commit()
+        db.refresh(nueva_registrosinventario)
+        return nueva_registrosinventario
+
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail="Error de integridad. Verifica que el producto exista y los datos sean válidos."
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ocurrió un error al crear el registro: {str(e)}"
+        )
 
 
 # Ruta para obtener todas las registrosinventario con paginación

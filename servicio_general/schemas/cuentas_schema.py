@@ -10,5 +10,17 @@ class CuentasCreate(BaseModel):
     contraseña: str
     rol: str
 
+
 class CuentasResponse(CuentasCreate):
     id: int
+
+
+# Nuevos esquemas para login
+class LoginRequest(BaseModel):
+    email: str
+    contraseña: str
+
+
+class LoginResponse(BaseModel):
+    nombre: str
+    rol: str

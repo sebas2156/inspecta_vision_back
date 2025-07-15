@@ -1,15 +1,26 @@
 from pydantic import BaseModel
-from typing import Optional, List
-import datetime
+from datetime import datetime
+from typing import Optional
 
 
-class AlertasInventarioCreate(BaseModel):
-    fecha: datetime.datetime
+class AlertasInventarioBase(BaseModel):
     sector_id: int
     producto_codigo: str
     empresa_id: int
     tipo_alerta: str
-    imagen: str
+    imagen: Optional[str] = None  # Ruta del archivo
+    imagen_url: Optional[str] = None  # URL completa para acceso
+    fecha: Optional[datetime] = None
 
-class AlertasInventarioResponse(AlertasInventarioCreate):
+
+class AlertasInventarioCreate(AlertasInventarioBase):
+    # Para creación, la imagen debe venir en base64
+    # pero no incluimos imagen_url en la creación
+    pass
+
+
+class AlertasInventarioResponse(AlertasInventarioBase):
     id: int
+
+    class Config:
+        orm_mode = True

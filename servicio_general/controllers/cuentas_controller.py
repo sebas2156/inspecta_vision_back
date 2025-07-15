@@ -1,8 +1,8 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, status
 from sqlalchemy.orm import Session
 from shared.database import get_db  # Asumiendo que tienes esta función para obtener la sesión de la DB
 from shared.models.cuentas import Cuentas  # Tu modelo de Cuentas
-from servicio_general.schemas.cuentas_schema import CuentasCreate, CuentasResponse
+from servicio_general.schemas.cuentas_schema import CuentasCreate, CuentasResponse, LoginRequest, LoginResponse
 from shared.schemas.paginacion import PaginatedResponse  # Los esquemas de Pydantic
 
 router = APIRouter()
@@ -79,3 +79,42 @@ def eliminar_cuentas(cuentas_id: int, db: Session = Depends(get_db)):
     db.delete(cuentas)
     db.commit()
     return cuentas
+
+
+# Ruta para login
+@router.post(
+    "/login",
+    response_model=LoginResponse,
+    summary="Autenticación de usuario",
+    description="Verifica las credenciales y devuelve información básica del usuario",
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {"description": "Autenticación exitosa"},
+        401: {"description": "Credenciales inválidas"},
+        404: {"description": "Usuario no encontrado"}
+    }
+)
+def login(login_request: LoginRequest, db: Session = Depends(get_db)):
+    # Buscar usuario por email
+    cuenta = db.query(Cuentas).filter(Cuentas.email == login_request.email).first()
+
+    if not cuenta:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Verificar contraseña (en texto plano por ahora - mejorar para producción)
+    if cuenta.contraseña != login_request.contraseña:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Contraseña incorrecta",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Si todo es correcto, devolver la respuesta
+    return LoginResponse(
+        nombre=cuenta.nombre,
+        rol=cuenta.rol
+    )

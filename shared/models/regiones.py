@@ -18,7 +18,7 @@ class Regiones(Base):
     id: Mapped[int] = mapped_column(INTEGER(11), primary_key=True)
     camara_id: Mapped[int] = mapped_column(INTEGER(11))
     sector_id: Mapped[int] = mapped_column(INTEGER(11))
-    coordenadas: Mapped[str] = mapped_column(String(35))
+    coordenadas: Mapped[str] = mapped_column(String(120))
     color: Mapped[str] = mapped_column(String(10))
 
     camara: Mapped['Camaras'] = relationship('Camaras', back_populates='regiones')
