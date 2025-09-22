@@ -8,8 +8,15 @@ from servicio_general.schemas.registrosinventario_schema import RegistrosInventa
 from shared.schemas.paginacion import PaginatedResponse  # Los esquemas de Pydantic
 from datetime import timedelta, datetime
 from sqlalchemy.exc import IntegrityError
+import threading
+import time
 
 router = APIRouter()
+
+# 1. Sistema de caché con expiración
+prediction_cache = {}
+cache_lock = threading.Lock()
+CACHE_TIMEOUT = 3600  # 1 hora en segundos
 
 from datetime import datetime, timedelta
 import pandas as pd
@@ -133,11 +140,20 @@ async def obtener_prediccion_demanda(
         dias_prediccion: int = Query(7, title="Días a predecir"),
         db: Session = Depends(get_db)
 ):
-    try:
-        # 1. Obtener datos históricos (últimos 2 años)
-        fecha_limite = datetime.now() - timedelta(days=730)
+    # 2. Clave única para la caché
+    cache_key = (producto_codigo, empresa_id, dias_prediccion)
 
-        # Consulta mejorada con manejo de valores nulos y formato de fechas
+    # 3. Verificar si existe en caché
+    with cache_lock:
+        cache_entry = prediction_cache.get(cache_key)
+        if cache_entry:
+            timestamp, response = cache_entry
+            if time.time() - timestamp < CACHE_TIMEOUT:
+                return response
+
+    try:
+        # 4. Lógica de predicción (original)
+        fecha_limite = datetime.now() - timedelta(days=730)
         resultados = db.query(
             func.date(RegistrosInventario.fecha).label("fecha"),
             func.count().label("cantidad")
@@ -150,56 +166,31 @@ async def obtener_prediccion_demanda(
             .order_by(func.date(RegistrosInventario.fecha)) \
             .all()
 
-        # Depuración: mostrar cantidad de datos obtenidos
-        print(f"\n{'=' * 50}")
-        print(f"Predicción solicitada para {producto_codigo} (Empresa: {empresa_id})")
-        print(f"Registros encontrados: {len(resultados)}")
-
-        # Si no hay datos, usar valor por defecto
         if not resultados:
-            print("Usando modelo de valor constante por falta de datos")
             predicciones = generar_prediccion_valor_constante([], dias_prediccion)
-            return PrediccionListResponse(prediccion=predicciones)
-
-        # Depuración: mostrar primeros 5 registros
-        print("Primeros 5 registros:")
-        for r in resultados[:5]:
-            print(f"- {r.fecha}: {r.cantidad}")
-
-        # 2. Seleccionar modelo según cantidad de datos
-        n = len(resultados)
-        if n < 5:
-            print("Usando modelo de valor constante (pocos datos)")
-            predicciones = generar_prediccion_valor_constante(resultados, dias_prediccion)
-        elif n < 10:
-            print("Usando modelo de promedio simple")
-            predicciones = generar_prediccion_con_promedio(resultados, dias_prediccion)
-        elif n < 20:
-            print("Usando modelo de promedio móvil (ventana=7)")
-            predicciones = generar_prediccion_promedio_movil(resultados, dias_prediccion, ventana=7)
         else:
-            print("Usando modelo de regresión lineal")
-            predicciones = generar_prediccion_lineal(resultados, dias_prediccion)
+            n = len(resultados)
+            if n < 5:
+                predicciones = generar_prediccion_valor_constante(resultados, dias_prediccion)
+            elif n < 10:
+                predicciones = generar_prediccion_con_promedio(resultados, dias_prediccion)
+            elif n < 20:
+                predicciones = generar_prediccion_promedio_movil(resultados, dias_prediccion, ventana=7)
+            else:
+                predicciones = generar_prediccion_lineal(resultados, dias_prediccion)
 
-        # Depuración: mostrar predicciones generadas
-        print("\nPredicciones generadas:")
-        for p in predicciones[:min(5, len(predicciones))]:
-            print(f"- {p.fecha}: {p.cantidad}")
+        response = PrediccionListResponse(prediccion=predicciones)
 
-        return PrediccionListResponse(prediccion=predicciones)
+        # 5. Almacenar en caché
+        with cache_lock:
+            prediction_cache[cache_key] = (time.time(), response)
+
+        return response
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        # En caso de error, usar modelo simple
-        try:
-            predicciones = generar_prediccion_valor_constante([], dias_prediccion)
-            return PrediccionListResponse(prediccion=predicciones)
-        except:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Error grave en predicción: {str(e)}"
-            )
+        # Manejo de errores (sin almacenar en caché)
+        predicciones = generar_prediccion_valor_constante([], dias_prediccion)
+        return PrediccionListResponse(prediccion=predicciones)
 
 # Ruta para crear una nueva registrosinventario
 @router.post("/", response_model=RegistrosInventarioResponse)

@@ -2,6 +2,9 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy.orm import Session
 from shared.database import get_db
 from shared.models.reglasepp import ReglasEpp
+from shared.models.suscripciones import Suscripciones
+from shared.models.modelosia import ModelosIa
+from servicio_general.schemas.modelosia_schema import ModelosIaResponse
 from pydantic import BaseModel, validator
 from typing import List, Union
 from shared.schemas.paginacion import PaginatedResponse
@@ -183,7 +186,6 @@ def obtener_regla_por_id(reglasepp_id: int, db: Session = Depends(get_db)):
 @router.get("/", response_model=PaginatedResponse[ReglasEppResponse])
 def listar_reglas(
         db: Session = Depends(get_db),
-        sector_id: int = Query(None, description="Filtrar por ID de sector"),
         suscripcion_id: int = Query(None, description="Filtrar por ID de suscripción"),
         page: int = Query(1, ge=1, description="Número de página"),
         per_page: int = Query(10, ge=1, le=100, description="Elementos por página")
@@ -191,8 +193,6 @@ def listar_reglas(
     query = db.query(ReglasEpp)
 
     # Aplicar filtros
-    if sector_id is not None:
-        query = query.filter(ReglasEpp.sector_id == sector_id)
     if suscripcion_id is not None:
         query = query.filter(ReglasEpp.suscripcion_id == suscripcion_id)
 
@@ -200,16 +200,18 @@ def listar_reglas(
     total = query.count()
     offset = (page - 1) * per_page
     reglas = query.offset(offset).limit(per_page).all()
+    total_paginas = (total + per_page - 1) // per_page  # Cálculo simple de total de páginas
 
     # Convertir restricciones de JSON a lista para cada regla
     for regla in reglas:
         regla.restricciones_equipamiento = json.loads(regla.restricciones_equipamiento)
 
     return {
-        "total": total,
-        "page": page,
-        "per_page": per_page,
-        "items": reglas
+        "total_registros": total,
+        "por_pagina": per_page,
+        "pagina_actual": page,
+        "total_paginas": total_paginas,
+        "data": reglas
     }
 
 
@@ -222,3 +224,32 @@ def obtener_regla_por_sector(sector_id: int, db: Session = Depends(get_db)):
     # Convertir restricciones de JSON a lista
     regla.restricciones_equipamiento = json.loads(regla.restricciones_equipamiento)
     return regla
+
+# Nueva ruta para obtener el modelo asociado a una regla EPP
+@router.get("/{regla_id}/modelo", response_model=ModelosIaResponse)
+def obtener_modelo_por_regla(
+    regla_id: int,
+    db: Session = Depends(get_db)
+):
+    # Obtener la regla EPP
+    regla = db.query(ReglasEpp).filter(ReglasEpp.regla_id == regla_id).first()
+    if not regla:
+        raise HTTPException(status_code=404, detail="Regla EPP no encontrada")
+
+    # Obtener la suscripción asociada
+    suscripcion = db.query(Suscripciones).filter(Suscripciones.id == regla.suscripcion_id).first()
+    if not suscripcion:
+        raise HTTPException(status_code=404, detail="Suscripción asociada no encontrada")
+
+    # Obtener el modelo de IA
+    modelo = db.query(ModelosIa).filter(ModelosIa.id == suscripcion.modelo_id).first()
+    if not modelo:
+        raise HTTPException(status_code=404, detail="Modelo de IA asociado no encontrado")
+
+    # Convertir las clases de JSON a lista
+    try:
+        modelo.classes = json.loads(modelo.classes)
+    except json.JSONDecodeError:
+        modelo.classes = []
+
+    return modelo

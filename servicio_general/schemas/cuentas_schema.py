@@ -24,3 +24,4 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     nombre: str
     rol: str
+    empresa_id: int

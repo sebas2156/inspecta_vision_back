@@ -6,7 +6,7 @@ import datetime
 class ModelosIaCreate(BaseModel):
     nombre: str
     ruta_modelo: str
-    classes: str
+    classes: List[str]
 
 class ModelosIaResponse(ModelosIaCreate):
     id: int

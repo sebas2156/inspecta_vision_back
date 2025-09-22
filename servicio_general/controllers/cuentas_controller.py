@@ -116,5 +116,6 @@ def login(login_request: LoginRequest, db: Session = Depends(get_db)):
     # Si todo es correcto, devolver la respuesta
     return LoginResponse(
         nombre=cuenta.nombre,
-        rol=cuenta.rol
+        rol=cuenta.rol,
+        empresa_id=cuenta.empresa_id
     )

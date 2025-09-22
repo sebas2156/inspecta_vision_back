@@ -83,9 +83,16 @@ def crear_productosector(productosector: ProductoSectorCreate, db: Session = Dep
 
 # Ruta para obtener todas las relaciones producto-sector con paginación
 @router.get("/", response_model=PaginatedResponse[ProductoSectorResponse])
-def obtener_productosector(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
-    total_registros = db.query(ProductoSector).count()
-    productosector = db.query(ProductoSector).offset(skip).limit(limit).all()
+def obtener_productosector(
+    empresa_id: int,
+    skip: int = 0,
+    limit: int = 10,
+    db: Session = Depends(get_db)
+):
+    query = db.query(ProductoSector).filter(ProductoSector.empresa_id == empresa_id)
+
+    total_registros = query.count()
+    productosector = query.offset(skip).limit(limit).all()
 
     total_paginas = (total_registros + limit - 1) // limit
     return PaginatedResponse(
@@ -95,30 +102,6 @@ def obtener_productosector(skip: int = 0, limit: int = 10, db: Session = Depends
         total_paginas=total_paginas,
         data=productosector
     )
-
-
-# Ruta para obtener una relación producto-sector por su clave compuesta
-@router.get("/buscar", response_model=ProductoSectorResponse)
-def obtener_productosector(
-        producto_codigo: str,
-        sector_id: int,
-        empresa_id: int,
-        db: Session = Depends(get_db)
-):
-    productosector = db.query(ProductoSector).filter(
-        and_(
-            ProductoSector.producto_codigo == producto_codigo,
-            ProductoSector.sector_id == sector_id,
-            ProductoSector.empresa_id == empresa_id
-        )
-    ).first()
-
-    if not productosector:
-        raise HTTPException(
-            status_code=404,
-            detail="Relación producto-sector no encontrada."
-        )
-    return productosector
 
 
 # Ruta para actualizar una relación producto-sector

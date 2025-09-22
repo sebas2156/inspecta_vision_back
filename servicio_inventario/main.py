@@ -25,7 +25,7 @@ import uuid
 from datetime import datetime
 import re
 
-GPU_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+GPU_DEVICE = "cpu" if torch.cuda.is_available() else "cpu"
 
 app = FastAPI()
 
@@ -326,9 +326,14 @@ class CameraManager:
         polygon = evento.get("coordenadas")
         sector_id = evento.get("sector_id")
 
+        # SOLUCIÓN: Verificar si el sector está registrado
+        if sector_id not in self.sector_products:
+            print(f"Advertencia: Sector {sector_id} no registrado. Ignorando región {region_id}.")
+            return
+
         # Obtener reglas de producto para este sector
-        permitidos = self.sector_products.get(sector_id, {}).get("permitidos", [])
-        no_permitidos = self.sector_products.get(sector_id, {}).get("no_permitidos", [])
+        permitidos = self.sector_products[sector_id].get("permitidos", [])
+        no_permitidos = self.sector_products[sector_id].get("no_permitidos", [])
 
         # Convertir coordenadas si vienen como string
         if isinstance(polygon, str):
@@ -441,7 +446,7 @@ class CameraManager:
                                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
                             else:
                                 print(
-                                    f"Advertencia: Polígono de región {region['region_id']} tiene {len(scaled_poly)} puntos (mínimo 3 requeridos)")
+                                    f"Advertencia: Polígón de región {region['region_id']} tiene {len(scaled_poly)} puntos (mínimo 3 requeridos)")
                         except Exception as e:
                             print(f"Error dibujando región {region.get('region_id', '?')}: {e}")
 
@@ -825,7 +830,30 @@ def main():
             cam_id = dispositivo["cam_id"]
             camera_to_models[cam_id].append(modelo_id)
 
-    # Ahora procesar dispositivos y regiones
+    # Paso 1: Recopilar todas las reglas de producto por sector
+    sector_rules = defaultdict(lambda: {
+        "permitidos": set(),
+        "no_permitidos": set()
+    })
+
+    for model_config in configuracion:
+        for dispositivo in model_config['dispositivos']:
+            for region in dispositivo["regions"]:
+                sector_id = region["sector_id"]
+                sector_rules[sector_id]["permitidos"].update(region.get("permitidos", []))
+                sector_rules[sector_id]["no_permitidos"].update(region.get("no_permitidos", []))
+
+    # Paso 2: Enviar eventos de producto_sector a todos los managers
+    for manager in camera_managers.values():
+        for sector_id, rules in sector_rules.items():
+            manager.handle_event({
+                "tipo": "producto_sector",
+                "sector_id": sector_id,
+                "permitidos": list(rules["permitidos"]),
+                "no_permitidos": list(rules["no_permitidos"])
+            })
+
+    # Paso 3: Ahora procesar dispositivos y regiones
     for model_config in configuracion:
         modelo_id = model_config['modelo_id']
         if modelo_id not in camera_managers:
@@ -835,8 +863,6 @@ def main():
 
         for dispositivo in model_config['dispositivos']:
             cam_id = dispositivo["cam_id"]
-            # Ya registrado en camera_to_models arriba
-
             # Evento para crear cámara
             manager.handle_event({
                 "tipo": "camara",
@@ -856,14 +882,6 @@ def main():
                     "camara_id": cam_id,
                     "coordenadas": region["polygon"],
                     "sector_id": region["sector_id"]
-                })
-
-                # Enviar evento de producto_sector para asegurar que las reglas estén cargadas
-                manager.handle_event({
-                    "tipo": "producto_sector",
-                    "sector_id": region["sector_id"],
-                    "permitidos": region["permitidos"],
-                    "no_permitidos": region["no_permitidos"]
                 })
 
     app.state.camera_managers = camera_managers

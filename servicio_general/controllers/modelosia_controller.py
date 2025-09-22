@@ -5,6 +5,9 @@ from shared.models.modelosia import ModelosIa  # Tu modelo de ModelosIa
 from servicio_general.schemas.modelosia_schema import ModelosIaCreate, ModelosIaResponse
 from shared.schemas.paginacion import PaginatedResponse  # Los esquemas de Pydantic
 
+from ultralytics import YOLO
+import json
+
 router = APIRouter()
 
 
@@ -40,10 +43,30 @@ def obtener_modelosias(skip: int = 0, limit: int = 10, db: Session = Depends(get
 @router.get("/{modelosia_id}", response_model=ModelosIaResponse)
 def obtener_modelosia(modelosia_id: str, db: Session = Depends(get_db)):
     modelosia = db.query(ModelosIa).filter(ModelosIa.id == modelosia_id).first()
+
     if not modelosia:
         raise HTTPException(status_code=404, detail="ModelosIa no encontrado.")
-    return modelosia
 
+    # Si no hay clases guardadas, las extraemos del modelo
+    if not modelosia.classes:
+        try:
+            modelo_yolo = YOLO(modelosia.ruta_modelo)
+            clases_lista = list(modelo_yolo.names.values())  # Solo nombres de clases
+            modelosia.classes = json.dumps(clases_lista)  # Guardar como JSON de lista
+            db.commit()
+            db.refresh(modelosia)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error al cargar el modelo: {str(e)}")
+
+    # Parseamos antes de devolver
+    clases_lista = json.loads(modelosia.classes)
+
+    return {
+        "id": modelosia.id,
+        "nombre": modelosia.nombre,
+        "ruta_modelo": modelosia.ruta_modelo,
+        "classes": clases_lista
+    }
 
 # Ruta para actualizar un modelosia
 @router.put("/{modelosia_id}", response_model=ModelosIaResponse)
