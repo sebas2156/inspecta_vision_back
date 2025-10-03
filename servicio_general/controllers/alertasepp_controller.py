@@ -10,6 +10,7 @@ import os
 import uuid
 from pathlib import Path
 from fastapi.responses import FileResponse
+from shared.websocketmanager import manager
 
 router = APIRouter()
 
@@ -39,7 +40,7 @@ def save_base64_image_epp(base64_str: str) -> str:
 
 
 @router.post("/", response_model=AlertasEppResponse)
-def crear_alertasepp(alertasepp: AlertasEppCreate, db: Session = Depends(get_db)):
+async def crear_alertasepp(alertasepp: AlertasEppCreate, db: Session = Depends(get_db)):
     # Procesar imagen si está presente
     image_path = None
     if alertasepp.imagen:
@@ -57,6 +58,18 @@ def crear_alertasepp(alertasepp: AlertasEppCreate, db: Session = Depends(get_db)
     db.add(nueva_alertasepp)
     db.commit()
     db.refresh(nueva_alertasepp)
+
+    # Enviar notificación a través de WebSocket
+    notification_data = {
+        "tipo": "nueva_alerta_epp",
+        "alerta_id": nueva_alertasepp.id,
+        "sector_id": nueva_alertasepp.sector_id,
+        "tipo_incumplimiento": nueva_alertasepp.tipo_incumplimiento,
+        "fecha": nueva_alertasepp.fecha.isoformat()
+    }
+
+    await manager.broadcast(notification_data)
+
     return nueva_alertasepp
 
 

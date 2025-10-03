@@ -10,6 +10,7 @@ import os
 import uuid
 from pathlib import Path
 from fastapi.responses import FileResponse
+from shared.websocketmanager import manager
 from typing import List
 
 router = APIRouter()
@@ -40,7 +41,7 @@ def save_base64_image(base64_str: str) -> str:
 
 
 @router.post("/", response_model=AlertasInventarioResponse)
-def crear_alertasinventario(alertasinventario: AlertasInventarioCreate, db: Session = Depends(get_db)):
+async def crear_alertasinventario(alertasinventario: AlertasInventarioCreate, db: Session = Depends(get_db)):
     # Procesar imagen si está presente
     image_path = None
     if alertasinventario.imagen:
@@ -59,6 +60,18 @@ def crear_alertasinventario(alertasinventario: AlertasInventarioCreate, db: Sess
     db.add(nueva_alertasinventario)
     db.commit()
     db.refresh(nueva_alertasinventario)
+
+    # Enviar notificación
+    notification_data = {
+        "tipo": "nueva_alerta_inventario",
+        "alerta_id": nueva_alertasinventario.id,
+        "sector_id": nueva_alertasinventario.sector_id,
+        "tipo_alerta": nueva_alertasinventario.tipo_alerta,
+        "fecha": nueva_alertasinventario.fecha.isoformat()
+    }
+
+    await manager.broadcast(notification_data)
+
     return nueva_alertasinventario
 
 

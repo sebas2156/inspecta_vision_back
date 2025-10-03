@@ -17,6 +17,9 @@ from servicio_general.controllers.alertasiventario_controller import router as a
 from servicio_general.controllers.registroinventario_controller import router as registroinventario_router
 from servicio_general.controllers.productosector_controller import router as productosector_router
 
+from fastapi import WebSocket
+from shared.websocketmanager import manager
+
 from shared.database import Base, engine
 import threading
 import json
@@ -66,6 +69,16 @@ app.include_router(productos_router, prefix="/api/productos", tags=["Productos"]
 app.include_router(alertasiventario_router, prefix="/api/alertasiventario", tags=["Alertas Iventario"])
 app.include_router(registroinventario_router, prefix="/api/registroinventario", tags=["Registro Inventario"])
 app.include_router(productosector_router, prefix="/api/productosector", tags=["Productos por Sector"])
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Mantener la conexión abierta
+            await websocket.receive_text()
+    except Exception:
+        manager.disconnect(websocket)
 
 # Configuración de Kafka
 KAFKA_BROKER = os.getenv('KAFKA_BROKER', 'localhost:9092')
